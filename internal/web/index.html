@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>连锁典当 · 收当消息条件分发中间件</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<header>
+  <div>
+    <h1>典当连锁收当消息 · 条件订阅与多级合并分发</h1>
+    <div class="subtitle">
+      固定种子生成几十万条订阅、几百万条收当消息；HQ / 区域 / 门店代理组成树。
+      索引只取候选订阅后做精确判断，合并过滤器保证“宁可多转发、不可漏消息”，多余流量由下一级精确表筛掉。
+    </div>
+  </div>
+  <div class="row">
+    <span id="statusBadge" class="badge warn">初始化中</span>
+    <button class="primary" id="replayBtn">模拟一条新消息</button>
+    <button id="verifyBtn">直判核对前 2 万条</button>
+  </div>
+</header>
+
+<main>
+  <div id="loadingBanner" class="banner info">正在生成固定种子数据、构建候选索引和首版合并表，完成后会自动开始回放消息……</div>
+  <div id="verifyBanner"></div>
+
+  <section class="grid kpis">
+    <div class="panel kpi"><div class="label">订阅总量 / 固定种子</div><div class="value" id="kpiSubs">-</div><div class="hint" id="kpiSeed"></div></div>
+    <div class="panel kpi"><div class="label">消息进度</div><div class="value" id="kpiProgress">-</div><div class="progress"><i id="progressBar" style="width:0%"></i></div></div>
+    <div class="panel kpi"><div class="label">门店 / 代理节点</div><div class="value" id="kpiNodes">-</div><div class="hint">64 家门店，动态加入退出</div></div>
+    <div class="panel kpi"><div class="label">全量索引平均匹配</div><div class="value accent" id="kpiAvgMatch">-</div><div class="hint" id="kpiP95Match">构建中</div></div>
+    <div class="panel kpi"><div class="label">最近单消息分级匹配总耗时</div><div class="value purple" id="kpiLastMatch">-</div><div class="hint">含路径上所有代理</div></div>
+    <div class="panel kpi"><div class="label">链路下行流量 / 必要投递</div><div class="value good" id="kpiTraffic">-</div><div class="hint" id="kpiTrafficHint"></div></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">合并策略与运行中拓扑</h2>
+      <div class="row">
+        <label class="row small">允许合并多放进来的比例
+          <input id="tolRange" type="range" min="0" max="50" step="1" value="20" />
+          <b id="tolValue">20%</b>
+        </label>
+        <button id="addRegionBtn" class="primary mini">加入新区域代理 R-dyn</button>
+        <span class="legend">0% 仅在样本上不产生额外命中；调高后相近条件更容易合并。正确性始终由门店原始条件兜底。</span>
+      </div>
+    </div>
+    <div id="topology" class="table-wrap" style="max-height:300px;margin-top:12px"></div>
+  </section>
+
+  <section class="grid two-col">
+    <div class="panel">
+      <h2>每台代理：收到的订阅 vs 实际往上游报的订阅</h2>
+      <div class="legend" style="margin-bottom:8px">
+        “收到”是直接下级实际上报/门店原始订阅；“上报”是按当前超投比例合并后的表。点“看表”检查具体条件。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>代理</th><th>层级</th><th>父节点</th><th class="right">原始</th>
+            <th class="right">收到</th><th class="right">上报/HQ预览</th><th>压缩</th>
+            <th class="right">平均匹配</th><th>操作</th>
+          </tr></thead>
+          <tbody id="nodesBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>每条链路转发消息数</h2>
+      <div class="legend" style="margin-bottom:8px">
+        Up：发源消息上报总部；Down：按下级订阅表过滤后的下行转发；必要数由子树真实送达结果反推。
+      </div>
+      <div class="table-wrap" style="max-height:430px">
+        <table>
+          <thead><tr><th>链路</th><th class="right">Up</th><th class="right">Down</th><th class="right">必要</th><th>超投</th></tr></thead>
+          <tbody id="linksBody"></tbody>
+        </table>
+      </div>
+      <h3>匹配耗时分布（路径累计）</h3>
+      <div id="hist"></div>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top:14px">
+    <h2>门店订阅在每一级被合并成了什么</h2>
+    <div class="row" style="margin-bottom:10px">
+      <label>选择门店
+        <select id="storeSelect"></select>
+      </label>
+      <button class="primary" id="loadStoreTraceBtn">追踪合并血缘</button>
+      <span class="legend">展示该门店原始条件、门店代理上报、区域代理/HQ 接收到和再次合并后的过滤器。</span>
+    </div>
+    <div id="storeTrace"><div class="muted">选择门店后点击“追踪合并血缘”。</div></div>
+  </section>
+
+  <section class="grid two-col" style="margin-top:14px">
+    <div class="panel">
+      <h2>每条消息走过的路径（最近 100 条）</h2>
+      <div class="table-wrap" style="max-height:520px">
+        <table>
+          <thead><tr><th>消息</th><th>当品属性</th><th>路径与耗时</th><th>送达门店</th></tr></thead>
+          <tbody id="tracesBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>动态事件 / 代理加入退出</h2>
+      <div class="table-wrap" style="max-height:240px">
+        <table><thead><tr><th>#</th><th>事件</th></tr></thead><tbody id="eventsBody"></tbody></table>
+      </div>
+      <h3>核对说明</h3>
+      <div class="small muted">
+        内置随机化单元测试覆盖开/闭区间边界、多值属性、缺失策略、索引与 oracle 一致性、合并覆盖性和小规模端到端零差异。
+        全量 240 万消息的逐门店直判核对运行 <code>go run ./cmd/verify</code>。
+        页面按钮执行前 2 万条消息的在线直判核对。
+      </div>
+      <div id="onlineVerify" style="margin-top:10px"></div>
+    </div>
+  </section>
+</main>
+
+<div id="nodeModal" class="modal-bg">
+  <div class="modal">
+    <button class="close" onclick="closeNode()">关闭</button>
+    <h2 id="nodeModalTitle">节点表</h2>
+    <div id="nodeModalBody"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
